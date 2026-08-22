@@ -220,3 +220,63 @@
   color: #111111;
   line-height: 1.4;
 }
+
+/* ---------- Size warning (extreme garment-vs-body width mismatch) ---------- */
+
+.fitforme-size-warning-blurred {
+  /* transform: scale() was tried here to hide the sharp edge pixels blur()
+     leaves exposed, but risks visually overflowing into surrounding page
+     content on sites that don't clip overflow on the image's container —
+     pushing the blur radius up covers most of that same edge-sharpness
+     issue without the layout risk. */
+  filter: blur(40px) brightness(0.85) saturate(0.7);
+  transition: filter 0.2s ease;
+}
+
+.fitforme-size-warning-overlay {
+  position: fixed;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+  pointer-events: none; /* only the card inside should intercept clicks */
+}
+
+.fitforme-size-warning-card {
+  pointer-events: auto;
+  background: rgba(17, 17, 17, 0.88);
+  color: #ffffff;
+  border-radius: 14px;
+  padding: 18px 20px;
+  max-width: 90%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.fitforme-size-warning-text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.fitforme-size-warning-button {
+  background: #ffffff;
+  color: #111111;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fitforme-size-warning-button:hover {
+  opacity: 0.85;
+}

@@ -46,18 +46,34 @@
      specifically for this step, telling it to nudge the hem/neckline to where it
      actually belongs given the model's real height, while leaving everything else
      (face, pose, body shape, garment color/pattern, lighting, background) unchanged.
-     The real garment photo is passed back in as `image_context` so the edit doesn't
-     drift the garment's fidelity while adjusting fit. Non-fatal if this step fails —
-     falls back to the un-edited Try-On result rather than failing the whole run.
+     Non-fatal if this step fails — falls back to the un-edited Try-On result rather than
+     failing the whole run.
+
+     Does **not** pass the scraped garment photo as `image_context`, despite that seeming
+     like reasonable insurance for garment fidelity — confirmed live this was a real bug:
+     that photo almost always shows the garment on the retailer's own model (not an
+     isolated flat-lay), and FASHN's Edit pulled that model's face/identity from it,
+     silently replacing our model's face in the final image — comparing all pipeline
+     stages side by side showed the face was still correct right after Try-On and only
+     changed after Edit. The image being edited already has the correct garment applied
+     (Try-On's job, already done) — Edit only does small, targeted hem/width adjustments,
+     which don't need an external reference image at all.
 
      The shorter/taller-vs-reference comparison this all depends on is a known place for
-     Claude to silently reverse itself (confirmed live: it can state the correct rule and
-     then write a conclusion that contradicts it). Mitigated by requiring a `fitReasoning`
-     field, filled in from a fixed template and emitted *before* `imagePrompt`/
-     `fitEditPrompt` in Claude's JSON response, forcing the shorter/taller conclusion to
-     be committed to as a discrete step rather than composed loosely within prose where
-     the two can drift apart. Logged to the console (not shown in the UI) so it's easy to
-     check the stated direction is actually correct for a given run.
+     Claude to silently reverse itself — confirmed live *twice*: first with a fill-in-the-
+     blank `fitReasoning` template (correctly stating the rule, then contradicting it in
+     the conclusion anyway), then again even with an explicit warning about that exact
+     mistake added to the template. Warning it about the mistake wasn't reliable enough,
+     so the direction is no longer something Claude derives at all: `computeHemDirection()`
+     determines shorter/taller in code from the two heights alone (doesn't need a garment
+     length, so it's available far more often than the full numeric `computeHemShift`), and
+     `buildHemReasoningSentence()` writes the complete `fitReasoning` sentence in code —
+     Claude is told to reproduce it character-for-character, not fill in blanks or
+     paraphrase it. Removing the inference step is a fundamentally more reliable fix than
+     asking an LLM to police its own reasoning. Only falls back to Claude deriving it
+     itself in the rare case where no reference-model height could be parsed at all — there
+     truly is nothing to compute from there. Logged to the console (not shown in the UI) so
+     it's easy to check the stated direction is actually correct for a given run.
 
      Also confirmed live (comparing all three logged stage images side by side): asking
      Edit to extend a garment's hem length can cause it to also slim/narrow her waist as
@@ -88,6 +104,25 @@
        cup letter alone can capture, so entering a real number in settings gives a more
        accurate result.
 
+       `describeWidthEffect()` scales the resulting wording by how extreme the mismatch
+       is — confirmed live this was a real gap: the ease number itself was always correct,
+       but a 1in mismatch and a 15in mismatch both produced the same soft "slightly snug" /
+       "bring the fit in slightly" language, badly underselling a garment that genuinely
+       wouldn't close in real life. Three tiers (mild/moderate/extreme, thresholds at ±2in
+       and ±5in): extreme escalates to describing visible strain and fabric pulled taut
+       with closures unable to close (too small), or the garment visibly swimming on her
+       and looking several sizes too big (too loose), rather than a cosmetic adjustment.
+       When `describeWidthEffect()` returns "extreme," `buildSizeWarning()` also attaches a
+       `{ tooLoose, easeIn, easeCm }` object to the generation result (`sizeWarning`),
+       separate from how the image itself is worded. content.js blurs every copy of the
+       generated image (including stragglers that load in during the post-replace sweep —
+       `sweepStragglerMatches`/`replaceImageOnPage` both take an `extraApply` callback now
+       so late duplicates get blurred too, not just whatever existed at replace time) and
+       shows a card over it: *"It appears like this clothing item doesn't come in your
+       size... Would you still like to view the generated image?"* (or the "runs large"
+       phrasing for the too-loose direction). Clicking "Show anyway" unblurs it. A fresh
+       generation clears any previous warning before applying its own.
+
        Both computations degrade independently and gracefully: if either needed number
        can't be parsed out of a given page's text, that specific correction is just
        omitted (falls back to qualitative-only language for hem, or no width correction at
@@ -95,6 +130,31 @@
        configured) is handed the precomputed number directly and told explicitly not to
        recompute or second-guess it — its job is reduced to phrasing a sentence around a
        given number, not doing the arithmetic itself.
+
+       Some sites (confirmed live: gap.com) publish no garment measurements at all —
+       `computeWidthShift` has nothing to compute from there. For that case there's a third
+       tier below the numeric one: `QUALITATIVE_FIT_REGEX` in `background.js` looks for
+       retailer-written fit language instead (e.g. Gap's own `"Fit: Classic. A straight &
+       easy fit. Slightly cropped, hits above the hip."`) — words like "oversized,"
+       "relaxed fit," "cropped," "hits above/below the hip," "true to size," etc. When
+       found, the fitEditPrompt instruction leans on that description qualitatively (no
+       invented number) instead of skipping the correction entirely. This only works if the
+       text actually reaches the scraper in the first place — content.js's
+       `MEASUREMENT_LINE_KEYWORDS` had to be broadened to catch this kind of line, since it
+       previously matched none of the (numeric-measurement-focused) keywords and was
+       silently dropped even though an adjacent "Model is 5'9"..." line on the same page
+       was already being captured.
+
+       The original wording of this instruction had a real bug, confirmed live: it told
+       Claude to correct the garment's width "if it currently reads as oversized" — but
+       `fitEditPrompt` is written *before* FLUX/FASHN generate anything, so Claude has never
+       seen an actual rendered image at that point and can't evaluate a "currently looks
+       like" condition. The result was Claude silently dropping the width instruction
+       entirely and only including the hem correction. Fixed by making the qualitative
+       instruction an unconditional standing correction ("ensure a normal, moderate drape"
+       vs. "ensure a visibly roomy drape," based purely on the source text's own wording,
+       not a judgment about the current image) instead of a conditional check it has no way
+       to evaluate.
   6. The result automatically replaces the image on the page — local to that browser
      tab only, undone by a refresh. Anchors to the exact garment image URL (not a
      re-run "biggest image" heuristic) and updates every matching element on the page,

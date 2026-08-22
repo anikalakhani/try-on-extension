@@ -162,7 +162,7 @@ async function generateImage(prompt, garmentImageUrl, fitEditPrompt) {
   let finalImageUrl = tryonImageUrl;
   if (fitEditPrompt) {
     try {
-      finalImageUrl = await fashnEdit(fashnApiKey, tryonImageUrl, fitEditPrompt, garmentImageUrl);
+      finalImageUrl = await fashnEdit(fashnApiKey, tryonImageUrl, fitEditPrompt);
     } catch (err) {
       // Don't fail the whole generation over a refinement step — the
       // un-edited Try-On result is still a valid (if less precise) output.
@@ -178,15 +178,24 @@ async function generateImage(prompt, garmentImageUrl, fitEditPrompt) {
  * prompt alongside images ("freeform instructions for the edits you want to
  * apply... small fixes"). Used here specifically to correct where the
  * garment's hem/neckline/proportions land on the model, using her actual
- * height — information Try-On has no way to receive. image_context passes
- * the real garment photo back in as a fidelity anchor, so the edit doesn't
- * drift the garment's color/pattern/construction while adjusting fit.
+ * height — information Try-On has no way to receive.
+ *
+ * Does NOT pass image_context (garmentImageUrl) — confirmed live this was
+ * a real bug, not a hardening measure: garmentImageUrl is the raw scraped
+ * product photo, which almost always shows the garment on THE RETAILER'S
+ * OWN MODEL, not an isolated flat-lay. FASHN's Edit treats image_context as
+ * general visual reference, not "garment only" — it pulled the retailer's
+ * model's face/identity from it, silently replacing our model's face in
+ * the final output even though the Try-On step immediately before it had
+ * the correct face. The image being edited already has the correct
+ * garment applied (that's Try-On's job, already done) — Edit's job here is
+ * small, targeted hem/width adjustments, which don't need an external
+ * fidelity anchor at all.
  */
-async function fashnEdit(apiKey, imageUrl, prompt, garmentImageUrl) {
+async function fashnEdit(apiKey, imageUrl, prompt) {
   const editJobId = await fashnSubmit(apiKey, "edit", {
     image: imageUrl,
     prompt,
-    image_context: garmentImageUrl,
     generation_mode: "balanced",
     resolution: "1k",
     seed: FASHN_TEST_SEED,
@@ -357,6 +366,18 @@ function getSandbaggedWeight(settings) {
 // scraped measurementsText (see parseReferenceModelHeightInches below).
 const GARMENT_MEASUREMENT_LINE_REGEX = /\b(bust|waist|hem|hip|sleeve|shoulder|inseam|length)\s*:/i;
 
+// Retailer-written fit language with no attached numbers — e.g. gap.com's
+// "Fit: Classic. A straight & easy fit. Slightly cropped, hits above the
+// hip." Confirmed live: some sites (gap.com) publish no garment
+// measurements at all, only text like this, so computeWidthShift has
+// nothing numeric to work with — this is the fallback signal used instead
+// (see the qualitative branch of the WIDTH/EASE section in callClaude and
+// buildTemplatePrompt below). Kept in sync with content.js's
+// MEASUREMENT_LINE_KEYWORDS, which is what makes sure this text actually
+// gets scraped into measurementsText in the first place.
+const QUALITATIVE_FIT_REGEX =
+  /\b(oversized|relaxed(?:\s+fit)?|slim fit|loose fit|boxy(?:\s+fit)?|tailored fit|straight\s*&?\s*easy|easy fit|cropped|hits above|hits below|hits at|classic fit|regular fit|true to size|runs small|runs large)\b/i;
+
 /**
  * Best-effort regex extraction of the reference model's height (in inches)
  * from scraped measurementsText — e.g. "Kartier is 177cm and wearing a size
@@ -457,6 +478,53 @@ function computeHemShift(settings, productData) {
 }
 
 /**
+ * Just the DIRECTION (shorter/taller, and therefore lower/higher-sitting
+ * hem) — doesn't need the garment's length at all, only both heights, so
+ * it's available far more often than the full computeHemShift (which also
+ * needs a garment length number that many sites just don't publish).
+ *
+ * This exists because of a confirmed, repeated failure mode: even when
+ * handed an explicit fill-in-the-blank fitReasoning template with a
+ * flagged warning about this exact mistake, Claude has TWICE stated the
+ * correct rule and then written a directionally-reversed conclusion anyway
+ * — once with an exact number available, once in the pure-qualitative
+ * case with no number to lean on at all. Warning it about the mistake
+ * hasn't been reliable enough. So this direction is computed here, in
+ * code, and handed to Claude as a settled fact it copies rather than
+ * something it derives — see buildHemReasoningSentence, which turns this
+ * into the literal fitReasoning text Claude is told to reproduce verbatim.
+ */
+function computeHemDirection(settings, productData) {
+  if (!settings.modelHeightEnabled || !settings.modelHeightInches) return null;
+  const refHeightIn = parseReferenceModelHeightInches(productData.measurementsText);
+  if (!refHeightIn || refHeightIn === settings.modelHeightInches) return null;
+  return {
+    refHeightIn,
+    isShorter: settings.modelHeightInches < refHeightIn,
+  };
+}
+
+/**
+ * Builds the COMPLETE fitReasoning sentence in code — Claude is told to
+ * reproduce this verbatim, not fill in blanks or paraphrase it, removing
+ * the inference step that's twice produced a directionally-reversed
+ * conclusion despite explicit warnings. Includes the exact magnitude when
+ * computeHemShift resolved one, otherwise stays qualitative (direction
+ * only, still 100% reliable since that part is also code-computed).
+ */
+function buildHemReasoningSentence(settings, hemDirection, hemShift) {
+  if (!hemDirection) return null;
+  const shorterOrTaller = hemDirection.isShorter ? "SHORTER" : "TALLER";
+  const proportionallyText = hemDirection.isShorter ? "SHORTER" : "LONGER";
+  const hemBehaviorText = hemDirection.isShorter
+    ? "extends further down her body, covering MORE, showing LESS or NO midriff"
+    : "sits higher relative to her body, covering LESS, showing MORE midriff";
+  const conclusionText = hemDirection.isShorter ? "LOWER, covering more" : "HIGHER, exposing more midriff";
+  const magnitudeText = hemShift ? `, by approximately ${Math.abs(hemShift.shiftIn).toFixed(1)} in (${Math.abs(hemShift.shiftCm).toFixed(1)} cm)` : "";
+  return `Reference model is ${hemDirection.refHeightIn.toFixed(1)} in tall. This model is ${settings.modelHeightInches} in tall, which is ${shorterOrTaller} than the reference. A garment's physical length is fixed regardless of who wears it, but torso length scales with height. Since this model is ${shorterOrTaller}, her torso is proportionally ${proportionallyText}, so the same fixed-length hem ${hemBehaviorText}. Conclusion: the hem sits ${conclusionText} than it did on the reference model${magnitudeText}.`;
+}
+
+/**
  * Hardcoded benchmark: rough full bust circumference (inches) per cup
  * letter, used ONLY when the user hasn't entered their real number
  * (modelBustEnabled off). NOT AI-generated and not medically precise —
@@ -536,6 +604,51 @@ function computeWidthShift(settings, productData) {
     easeIn,
     easeCm: easeIn * 2.54,
   };
+}
+
+/**
+ * Turns a raw ease number into wording that actually scales with how
+ * extreme the mismatch is. Confirmed live this was a real gap: the number
+ * was always correct, but a 1in mismatch and a 15in mismatch both produced
+ * the same soft "slightly snug" / "bring the fit in slightly" language —
+ * badly underselling a garment that genuinely wouldn't close in real life.
+ * "mild" keeps the original wording; "moderate" and "extreme" escalate to
+ * describing visible strain (too small) or the garment swimming on her
+ * frame (too big), including that closures may not fully close at the
+ * extreme end — since that's the realistic outcome, not a cosmetic detail.
+ */
+function describeWidthEffect(easeIn) {
+  const absIn = Math.abs(easeIn);
+  const tooLoose = easeIn >= 0;
+  const severity = absIn <= 2 ? "mild" : absIn <= 5 ? "moderate" : "extreme";
+
+  const directionLabel = tooLoose ? `LOOSER than its tailored fit` : `TIGHTER than its tailored fit`;
+
+  const imagePromptPhrase = tooLoose
+    ? {
+        mild: `drapes with a bit of extra ease through the chest and shoulders, a relaxed fit`,
+        moderate: `drapes noticeably loose through the chest and shoulders, a relaxed, oversized fit`,
+        extreme: `hangs dramatically oversized on her — swimming loosely through the chest and shoulders, well beyond a simply relaxed fit, looking like several sizes too big`,
+      }[severity]
+    : {
+        mild: `fits close through the chest, slightly snugger than its tailored measurement`,
+        moderate: `fits tightly through the chest and shoulders, visibly snug with the fabric pulling`,
+        extreme: `fits severely undersized through the chest and shoulders — the fabric pulled taut and straining, visibly too small for her frame, with any zipper or buttons unable to fully close`,
+      }[severity];
+
+  const fitEditPhrase = tooLoose
+    ? {
+        mild: `add a touch of visible ease through the chest and shoulders`,
+        moderate: `add noticeable ease/looseness through the chest and shoulders, giving it a relaxed, oversized drape`,
+        extreme: `render the garment dramatically oversized through the chest and shoulders — hanging loosely on her, well past a normal relaxed fit, looking like it's several sizes too big`,
+      }[severity]
+    : {
+        mild: `render the garment's fit slightly snugger through the chest and shoulders`,
+        moderate: `render the garment fitting tightly and visibly snug through the chest and shoulders, with the fabric pulling`,
+        extreme: `render the garment as severely undersized on her — visibly straining across the chest and shoulders, fabric pulled taut, and any zipper or buttons unable to fully close`,
+      }[severity];
+
+  return { severity, tooLoose, directionLabel, imagePromptPhrase, fitEditPhrase };
 }
 
 /**
@@ -809,58 +922,84 @@ async function callClaude(settings, productData) {
   // estimate, not just modelHeightEnabled.
   const widthShift = computeWidthShift(settings, productData);
   const hasBustEstimate = !!estimateBustCircumferenceInches(settings);
+  // Fallback signal for sites (confirmed live: gap.com) that publish no
+  // garment measurements at all, only retailer-written fit language like
+  // "Fit: Classic. A straight & easy fit. Slightly cropped, hits above the
+  // hip." — see QUALITATIVE_FIT_REGEX. Used only when the precise numeric
+  // path (widthShift) isn't available; numeric always wins when present.
+  const hasQualitativeFit = !!(productData.measurementsText && QUALITATIVE_FIT_REGEX.test(productData.measurementsText));
+
+  const hemDirection = computeHemDirection(settings, productData);
+  const hemReasoningSentence = buildHemReasoningSentence(settings, hemDirection, hemShift);
 
   const hemSection = settings.modelHeightEnabled
-    ? `\n\nHEM/LENGTH — the scraped text may include the height and size worn by the model in the original product photo. Compare that to this model's actual height (${settings.modelHeight}) and reason out how that changes where the garment's hemline/neckline/waistband lands on THIS model's body.${
-        hemShift
-          ? ` An exact estimate has ALREADY been computed for you in code — do not recompute, re-derive, or second-guess it: the reference model is ~${hemShift.refHeightIn.toFixed(1)} in tall, this garment's own length is ~${hemShift.garmentLengthIn.toFixed(1)} in, and this model is ${settings.modelHeightInches} in tall. Based on those exact numbers, the hem lands approximately ${hemShiftMagnitudeText} ${hemShiftDirectionText}. Use this precise number, not a vague description.`
-          : ""
-      }
+    ? hemReasoningSentence
+      ? // hemDirection resolved — the shorter/taller comparison and its
+        // consequence are both fully settled in code. Claude is told to
+        // reproduce the sentence VERBATIM, not derive or paraphrase it —
+        // asking it to fill in [SHORTER/TALLER]-style blanks itself was
+        // tried twice and confirmed to still produce a directionally
+        // reversed conclusion despite an explicit warning about exactly
+        // this mistake, so the inference step is removed entirely here.
+        `\n\nHEM/LENGTH — a complete, verified conclusion has ALREADY been worked out for you in code. Do NOT re-derive, re-evaluate, recompute, or second-guess whether this model is shorter or taller than the reference, or which way the hem moves — that reasoning is done and settled, not a judgment call for you to make.
+
+Set fitReasoning to EXACTLY this sentence, character-for-character, with no changes, additions, or rephrasing:
+"${hemReasoningSentence}"
+
+In imagePrompt, state explicitly and concretely where the garment's key hem/neckline/proportion points land on this specific model, consistent with — and only with — that exact conclusion (${
+          hemShift
+            ? `e.g. "the hem extends roughly ${hemShiftMagnitudeText} further down than shown in the original photo, landing past her natural waist toward her hip, showing no midriff"`
+            : hemDirection.isShorter
+              ? `e.g. "the cropped hem extends past her natural waist toward her hip, showing no midriff"`
+              : `e.g. "the cropped hem sits well above her natural waist, exposing several inches of midriff"`
+        }) — don't leave this vague or assume the same fit shown in the original photo, and don't write anything implying the opposite direction from the fitReasoning sentence above.
+
+In fitEditPrompt, include an instruction to adjust only where the garment's hem/neckline/proportions sit on her body, consistent with — and only with — that same exact conclusion. State the target placement concretely${
+          hemShift
+            ? ` and with the exact measurement (e.g. "Extend the garment's hemline downward by approximately ${hemShiftMagnitudeText} compared to how it appears in this photo, so it falls past her natural waist toward her hip and shows no exposed midriff — she is notably shorter than the garment's reference model.")`
+            : hemDirection.isShorter
+              ? ` (e.g. "Adjust the top so its hemline falls past her natural waist, extending toward her hip, so it shows no exposed midriff — she is notably shorter than the garment's reference model.")`
+              : ` (e.g. "Adjust the top so its hemline sits higher, well above her natural waist, exposing several inches of midriff — she is notably taller than the garment's reference model.")`
+        }.`
+      : // Couldn't even parse a reference model height at all — genuinely
+        // nothing to compute from, so this is the only case that still
+        // asks Claude to reason it out itself.
+        `\n\nHEM/LENGTH — the scraped text may include the height and size worn by the model in the original product photo. Compare that to this model's actual height (${settings.modelHeight}) and reason out how that changes where the garment's hemline/neckline/waistband lands on THIS model's body.
 
 First, fill in the fitReasoning field with EXACTLY this template, filled in — do not skip or shorten it:
-"Reference model is [height]. This model is ${settings.modelHeight}, which is [SHORTER/TALLER] than the reference. A garment's physical length is fixed regardless of who wears it, but torso length scales with height. Since this model is [SHORTER/TALLER], her torso is proportionally [SHORTER/LONGER], so the same fixed-length hem [extends further down her body, covering MORE, showing LESS or NO midriff / sits higher relative to her body, covering LESS, showing MORE midriff]. Conclusion: the hem sits [LOWER, covering more / HIGHER, exposing more midriff] than it did on the reference model${hemShift ? `, by approximately ${hemShiftMagnitudeText}` : ""}."
-This is a common point where reasoning silently reverses itself — SHORTER model = LOWER-sitting hem = LESS midriff; TALLER model = HIGHER-sitting hem = MORE midriff. Pick the bracketed options consistent with each other and with which one (shorter/taller) is actually true here${
-        hemShift ? ` — this MUST match the precomputed direction above (${hemShiftDirectionText})` : ""
-      } — do not let imagePrompt or fitEditPrompt contradict the conclusion you just wrote in fitReasoning.
+"Reference model is [height]. This model is ${settings.modelHeight}, which is [SHORTER/TALLER] than the reference. A garment's physical length is fixed regardless of who wears it, but torso length scales with height. Since this model is [SHORTER/TALLER], her torso is proportionally [SHORTER/LONGER], so the same fixed-length hem [extends further down her body, covering MORE, showing LESS or NO midriff / sits higher relative to her body, covering LESS, showing MORE midriff]. Conclusion: the hem sits [LOWER, covering more / HIGHER, exposing more midriff] than it did on the reference model."
+This is a common point where reasoning silently reverses itself — SHORTER model = LOWER-sitting hem = LESS midriff; TALLER model = HIGHER-sitting hem = MORE midriff. Pick the bracketed options consistent with each other and with which one (shorter/taller) is actually true here — do not let imagePrompt or fitEditPrompt contradict the conclusion you just wrote in fitReasoning.
 
-In imagePrompt, state explicitly and concretely where the garment's key hem/neckline/proportion points land on this specific model, consistent with the fitReasoning conclusion above${
-        hemShift
-          ? ` — use the precise number (e.g. "the hem extends roughly ${hemShiftMagnitudeText} further down than shown in the original photo, landing past her natural waist toward her hip, showing no midriff")`
-          : ` (e.g. "the top's cropped hem extends past her natural waist toward her hip, showing no midriff" for a notably shorter model, or "sits well above her natural waist, exposing several inches of midriff" for a notably taller model)`
-      } — don't leave this vague or assume the same fit shown in the original photo.
+In imagePrompt, state explicitly and concretely where the garment's key hem/neckline/proportion points land on this specific model, consistent with the fitReasoning conclusion above (e.g. "the top's cropped hem extends past her natural waist toward her hip, showing no midriff" for a notably shorter model, or "sits well above her natural waist, exposing several inches of midriff" for a notably taller model) — don't leave this vague or assume the same fit shown in the original photo.
 
-In fitEditPrompt, include an instruction (consistent with the SAME fitReasoning conclusion — do not re-derive it independently) to adjust only where the garment's hem/neckline/proportions sit on her body. State the target placement concretely${
-        hemShift
-          ? ` and with the exact measurement (e.g. "Extend the garment's hemline downward by approximately ${hemShiftMagnitudeText} compared to how it appears in this photo, so it falls past her natural waist toward her hip and shows no exposed midriff — she is notably shorter than the garment's reference model.")`
-          : ` (e.g. "Adjust the top so its hemline falls past her natural waist, extending toward her hip, so it shows no exposed midriff — she is notably shorter than the garment's reference model.")`
-      }.`
+In fitEditPrompt, include an instruction (consistent with the SAME fitReasoning conclusion — do not re-derive it independently) to adjust only where the garment's hem/neckline/proportions sit on her body. State the target placement concretely (e.g. "Adjust the top so its hemline falls past her natural waist, extending toward her hip, so it shows no exposed midriff — she is notably shorter than the garment's reference model.").`
     : "";
 
-  const widthSection = hasBustEstimate
+  const widthEffect = widthShift ? describeWidthEffect(widthShift.easeIn) : null;
+
+  const widthSection = hasBustEstimate || hasQualitativeFit
     ? `\n\nWIDTH/EASE (independent of hem/length above) — FASHN's Try-On step (which applies the real garment) has NO sizing input at all (confirmed against its full documented API parameters) — it can only replicate whatever fit is shown in the scraped garment photo, with no way to know if that specific photographed size runs looser or tighter than this model's real measurements. This is exactly why a garment can end up looking implausibly oversized or too-small in the final result.${
         widthShift
           ? ` An exact estimate has ALREADY been computed for you in code — do not recompute it: this garment's own bust measurement is ${widthShift.garmentBustIn.toFixed(1)} in; this model's bust/chest circumference is ${
               widthShift.modelBustSource === "measured"
                 ? `${widthShift.modelBustIn.toFixed(1)} in (a real measurement she provided)`
                 : `estimated at ${widthShift.modelBustIn.toFixed(1)} in from her cup size (a rough benchmark, not exact — say "approximately")`
-            }. That means, compared to how it's shown in the original photo, the garment will fit her ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) ${
-              widthShift.easeIn >= 0
-                ? `LOOSER than its tailored fit — it may read as visibly oversized/baggy through the chest and shoulders`
-                : `TIGHTER than its tailored fit — it may look snug or strained through the chest and shoulders`
-            }.
+            }. That means, compared to how it's shown in the original photo, the garment will fit her ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) ${widthEffect.directionLabel} — this is a ${widthEffect.severity.toUpperCase()} mismatch, so the wording below MUST match that severity, not a generic "slightly snug"/"slightly loose" description regardless of how large the number is.
 
-In imagePrompt, state this specific fit effect concretely (e.g. "${
-              widthShift.easeIn >= 0
-                ? `the jacket drapes with noticeable extra ease through the chest and shoulders, roughly ${Math.abs(widthShift.easeIn).toFixed(1)} inches looser than its tailored measurement, giving it a relaxed, oversized fit`
-                : `the top fits close through the chest, roughly ${Math.abs(widthShift.easeIn).toFixed(1)} inches snugger than its tailored measurement`
-            }").
+In imagePrompt, state this specific fit effect concretely, matching the ${widthEffect.severity} severity above (e.g. "the jacket ${widthEffect.imagePromptPhrase}").
 
-In fitEditPrompt, include an instruction to adjust the GARMENT's fit (not her body) by approximately ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) — ${
-              widthShift.easeIn >= 0
-                ? `add visible ease/looseness through the chest and shoulders of the garment, giving it a relaxed, slightly oversized drape`
-                : `bring the garment's fit in slightly through the chest and shoulders`
-            }, making explicit that this resizes the GARMENT's drape only, never her body.`
-          : ` The garment's own bust measurement wasn't found in the scraped text, so skip this specific correction rather than guessing a number — don't mention garment width/ease at all unless the source text makes it unambiguous.`
+In fitEditPrompt, include an instruction to adjust the GARMENT's fit (not her body) by approximately ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) — ${widthEffect.fitEditPhrase} — making explicit that this resizes the GARMENT's drape only, never her body.${
+              widthEffect.severity === "extreme"
+                ? ` This is an EXTREME mismatch — do not soften it to "slightly" anything. At this magnitude the realistic outcome is visible strain (too small) or the garment visibly swimming on her (too big), not a subtle adjustment.`
+                : ""
+            }`
+          : hasQualitativeFit
+            ? ` No exact garment measurements were found on this page, but the scraped text (see "Garment measurements / reference model info" below) includes the retailer's own qualitative fit description — wording like "oversized," "relaxed fit," "slim fit," "cropped," "hits above/below the hip," "true to size," etc. Treat that as your best available signal for how loose or fitted the garment should actually look — it is not a precise number, but it is real information, not a guess.
+
+In imagePrompt, describe the garment's silhouette consistent with that wording. A "classic," "regular," "straight & easy," or "true to size" fit reads as a normal, moderate drape — NOT skin-tight, but also NOT dramatically oversized or baggy. An explicit "oversized," "relaxed fit," or "boxy" description DOES support a visibly roomier drape. Don't default to describing it as loose/oversized unless the source text actually says so.
+
+In fitEditPrompt, ALWAYS include an instruction ensuring the garment's fit (not her body) matches that described silhouette. You are writing this before the garment is even generated — you have NOT seen the rendered image and cannot judge whether it "currently" looks right, so state this as a standing correction to apply regardless, not a conditional check. If the source describes a normal/moderate fit ("classic," "straight," "regular," "true to size"), instruct that the garment should have a normal, moderate drape through the chest and shoulders — not exaggeratedly oversized or baggy. If the source explicitly says "oversized," "relaxed fit," or "boxy," instruct that a visibly roomy, relaxed drape should be preserved. This is a qualitative adjustment — do not invent a specific inch measurement for it.`
+            : ` The garment's own bust measurement wasn't found in the scraped text, so skip this specific correction rather than guessing a number — don't mention garment width/ease at all unless the source text makes it unambiguous.`
       }`
     : "";
 
@@ -874,7 +1013,7 @@ In fitEditPrompt, include an instruction to adjust the GARMENT's fit (not her bo
         : `Then add, word for word: "This is a WIDTH change to the garment only — do not narrow, widen, slim, or otherwise resize her waist, torso, arms, bust, or any other body measurement. Her exact body shape and proportions must stay pixel-for-pixel identical to the current photo; only how the garment's fabric drapes on her may change."`;
 
   const garmentFitInstruction =
-    productData.measurementsText && (settings.modelHeightEnabled || hasBustEstimate)
+    productData.measurementsText && (settings.modelHeightEnabled || hasBustEstimate || hasQualitativeFit)
       ? `\n\nCRITICAL — garment fit: the scraped text (see "Garment measurements / reference model info" below) may include the garment's own measurements (bust/waist/hem/length, in cm or inches) and/or the height and size worn by the model in the original product photo.${hemSection}${widthSection}
 
 Also produce fitEditPrompt: a short, SELF-CONTAINED instruction (it will be sent alone, with no other context, to a separate image-editing step that already has a photo of this exact model wearing the real garment) combining whichever of the hem/length and width/ease adjustments above apply. ${bodyPreservationConstraint} Confirmed live: without an explicit body-preservation constraint, the edit model tends to also resize her body as an unwanted side effect of adjusting the garment, contradicting the 'leave body shape unchanged' instruction it was already given. End with an instruction to leave everything else — her face, pose, body shape, the garment's color/pattern/construction, lighting, and background — unchanged.`
@@ -936,7 +1075,25 @@ Output format: respond with ONLY a single raw JSON object, no markdown code fenc
   if (!textBlock || !textBlock.text) {
     throw new Error("Claude returned no text content.");
   }
-  return parseClaudeJson(textBlock.text.trim());
+  // sizeWarning is code-computed (see below), not something Claude outputs —
+  // merged in after parsing, same severity classification used to word the
+  // fitEditPrompt instruction above.
+  return { ...parseClaudeJson(textBlock.text.trim()), sizeWarning: buildSizeWarning(widthEffect, widthShift) };
+}
+
+/**
+ * Surfaced to the user directly (blurred image + confirmation prompt in
+ * content.js) rather than just softened wording, when the width mismatch is
+ * extreme enough that the garment likely doesn't come in a size that fits —
+ * not just "runs a little big/small."
+ */
+function buildSizeWarning(widthEffect, widthShift) {
+  if (!widthEffect || !widthShift || widthEffect.severity !== "extreme") return null;
+  return {
+    tooLoose: widthEffect.tooLoose,
+    easeIn: Math.abs(widthShift.easeIn),
+    easeCm: Math.abs(widthShift.easeCm),
+  };
 }
 
 /**
@@ -985,16 +1142,23 @@ function buildTemplatePrompt(productData, settings) {
   const hasHeightFitData = !!(settings && settings.modelHeightEnabled && productData.measurementsText);
   const hemShift = hasHeightFitData ? computeHemShift(settings, productData) : null;
   const widthShift = productData.measurementsText ? computeWidthShift(settings || {}, productData) : null;
-  const hasFitData = hasHeightFitData || !!widthShift;
+  // Fallback for sites with no numeric garment measurements at all
+  // (confirmed live: gap.com) — see QUALITATIVE_FIT_REGEX / the matching
+  // callClaude comment. Numeric widthShift always wins when available.
+  const hasQualitativeFit = !!(productData.measurementsText && QUALITATIVE_FIT_REGEX.test(productData.measurementsText));
+  const hasFitData = hasHeightFitData || !!widthShift || hasQualitativeFit;
 
   const hemNote = hemShift
     ? ` Reference — this garment's own length is ~${hemShift.garmentLengthIn.toFixed(1)} in and the reference model is ~${hemShift.refHeightIn.toFixed(1)} in tall; this model is ${settings.modelHeightInches} in tall. The hem should land approximately ${Math.abs(hemShift.shiftIn).toFixed(1)} in (${Math.abs(hemShift.shiftCm).toFixed(1)} cm) ${hemShift.shiftIn >= 0 ? "lower on her body (more coverage)" : "higher on her body (less coverage)"} than it did on the reference model.`
     : hasHeightFitData
       ? ` Reference — garment measurements and/or the original photo's model height/size from the product page: ${productData.measurementsText}. Position hemlines, necklines, and other proportions on this model according to her actual height relative to that reference, rather than assuming identical placement to the original photo.`
       : "";
+  const widthEffect = widthShift ? describeWidthEffect(widthShift.easeIn) : null;
   const widthNote = widthShift
-    ? ` This garment's own bust measurement is ${widthShift.garmentBustIn.toFixed(1)} in vs. this model's ${widthShift.modelBustSource === "measured" ? "" : "estimated "}bust/chest circumference of ${widthShift.modelBustIn.toFixed(1)} in${widthShift.modelBustSource === "measured" ? "" : " (from her cup size)"} — the garment will fit ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) ${widthShift.easeIn >= 0 ? "looser/roomier through the chest and shoulders than its tailored fit (potentially reading as oversized)" : "snugger/tighter through the chest and shoulders than its tailored fit"}.`
-    : "";
+    ? ` This garment's own bust measurement is ${widthShift.garmentBustIn.toFixed(1)} in vs. this model's ${widthShift.modelBustSource === "measured" ? "" : "estimated "}bust/chest circumference of ${widthShift.modelBustIn.toFixed(1)} in${widthShift.modelBustSource === "measured" ? "" : " (from her cup size)"} — the garment will fit ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) ${widthEffect.directionLabel.toLowerCase()}: it ${widthEffect.imagePromptPhrase}.`
+    : hasQualitativeFit
+      ? ` No exact garment measurements were listed, but the product page describes this garment's fit qualitatively (see scraped text) — reflect that described silhouette (e.g. "classic"/"straight"/"true to size" reads as a normal, moderate drape, not oversized; "oversized"/"relaxed fit"/"boxy" supports a visibly roomier drape) rather than assuming a generic fit.`
+      : "";
   const fitNote = `${hemNote}${widthNote}`;
   const prompt =
     `Full-body studio fashion photograph of ${bodyDescription}, in sharp focus throughout ` +
@@ -1020,12 +1184,14 @@ function buildTemplatePrompt(productData, settings) {
       }`
     : "";
   const widthEditClause = widthShift
-    ? `Adjust the garment's fit (not her body) through the chest and shoulders by approximately ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) — ${
-        widthShift.easeIn >= 0
-          ? "add visible ease/looseness, giving it a relaxed, slightly oversized drape"
-          : "bring the fit in slightly, since it currently reads as snugger than her actual measurement"
-      }, since this garment's own bust measurement (${widthShift.garmentBustIn.toFixed(1)} in) differs from her ${widthShift.modelBustSource === "measured" ? "measured" : "estimated"} bust/chest circumference (${widthShift.modelBustIn.toFixed(1)} in).`
-    : "";
+    ? `Adjust the garment's fit (not her body) through the chest and shoulders by approximately ${Math.abs(widthShift.easeIn).toFixed(1)} in (${Math.abs(widthShift.easeCm).toFixed(1)} cm) — ${widthEffect.fitEditPhrase}, since this garment's own bust measurement (${widthShift.garmentBustIn.toFixed(1)} in) differs from her ${widthShift.modelBustSource === "measured" ? "measured" : "estimated"} bust/chest circumference (${widthShift.modelBustIn.toFixed(1)} in).${
+        widthEffect.severity === "extreme"
+          ? ` This is an extreme mismatch — depict real strain (too small) or the garment visibly swimming on her (too big), not a subtle adjustment.`
+          : ""
+      }`
+    : hasQualitativeFit
+      ? `Adjust the garment's fit (not her body) to match its qualitative fit description from the product page: for a "classic"/"straight"/"regular"/"true to size" description, ensure a normal, moderate drape through the chest and shoulders — not exaggeratedly oversized or baggy; for an "oversized"/"relaxed fit"/"boxy" description, ensure a visibly roomy, relaxed drape is preserved. This is a standing correction (this prompt is written before the garment is rendered, so there is no "current" image to judge against) — a qualitative adjustment, not an exact measurement.`
+      : "";
   const bodyPreservationClause =
     hemEditClause && widthEditClause
       ? `These are GARMENT fit changes only (length and/or width of the fabric itself) — do not narrow, widen, slim, or otherwise resize her waist, torso, arms, bust, shoulders, or any other body measurement. Her exact body shape and proportions must stay pixel-for-pixel identical to the current photo; only how the garment's fabric drapes or hangs on her may change.`
@@ -1044,5 +1210,5 @@ function buildTemplatePrompt(productData, settings) {
         .join(" ")
     : null;
 
-  return { prompt, fitEditPrompt };
+  return { prompt, fitEditPrompt, sizeWarning: buildSizeWarning(widthEffect, widthShift) };
 }

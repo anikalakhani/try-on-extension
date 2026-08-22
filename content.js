@@ -10,12 +10,17 @@
   const LOADING_ID = "fitforme-loading-overlay";
   const LOADING_TEXT_ID = "fitforme-loading-text";
   const TARGET_IMG_ATTR = "data-fitforme-target";
+  const SIZE_WARNING_ID = "fitforme-size-warning-overlay";
+  const SIZE_WARNING_BLUR_CLASS = "fitforme-size-warning-blurred";
 
   // Holds everything about the current try-on so the hover panel's
   // "regenerate" actions can act on it without re-scraping the page.
-  let session = null; // { garmentImageUrl, targetImageEl, prompt, modelImageUrl, finalImageUrl }
+  let session = null; // { garmentImageUrl, targetImageEl, prompt, modelImageUrl, finalImageUrl, sizeWarning }
   let hoverPanelEl = null;
   let hoverHideTimer = null;
+  // { overlayEl, blurredEls, reposition } while a size-warning blur is
+  // active, else null — see applySizeWarning/clearSizeWarning.
+  let sizeWarningState = null;
 
   init();
 
@@ -136,6 +141,93 @@
     return (text) => sinks.forEach((sink) => sink && sink(text));
   }
 
+  // ---------- Size warning (extreme garment-vs-body width mismatch) ----------
+  // Shown when background.js's width math (see computeWidthShift /
+  // describeWidthEffect) flags the mismatch as "extreme" — the generated
+  // image gets blurred with a warning until the user explicitly confirms
+  // they still want to see it, rather than silently showing a try-on for a
+  // size that plausibly won't fit at all.
+
+  /**
+   * Blurs every currently-known copy of the generated image and shows one
+   * warning card positioned over the primary (largest/first-matched) one.
+   * `els` should be every element FASHN's replacement actually touched —
+   * late-loading stragglers get blurred too via the extraApply callback
+   * threaded through replaceImageOnPage/sweepStragglerMatches, not just
+   * whatever existed at the moment of the initial swap.
+   */
+  function applySizeWarning(els, sizeWarning) {
+    clearSizeWarning();
+    if (!els || !els.length || !sizeWarning) return;
+
+    els.forEach((el) => el.classList.add(SIZE_WARNING_BLUR_CLASS));
+
+    const primary = els[0];
+    const overlay = document.createElement("div");
+    overlay.id = SIZE_WARNING_ID;
+    overlay.className = "fitforme-size-warning-overlay";
+
+    const card = document.createElement("div");
+    card.className = "fitforme-size-warning-card";
+
+    const text = document.createElement("div");
+    text.className = "fitforme-size-warning-text";
+    text.textContent = sizeWarning.tooLoose
+      ? "It looks like this item runs large for your measurements — this size may not fit the way it's shown here. Would you still like to view the generated image?"
+      : "It appears like this clothing item doesn't come in your size — it may be too small based on your measurements. Would you still like to view the generated image?";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "fitforme-size-warning-button";
+    btn.textContent = "Show anyway";
+    btn.addEventListener("click", clearSizeWarning);
+
+    card.appendChild(text);
+    card.appendChild(btn);
+    overlay.appendChild(card);
+    document.documentElement.appendChild(overlay);
+
+    const reposition = () => {
+      const rect = primary.getBoundingClientRect();
+      overlay.style.top = `${rect.top}px`;
+      overlay.style.left = `${rect.left}px`;
+      overlay.style.width = `${rect.width}px`;
+      overlay.style.height = `${rect.height}px`;
+      // The blurred image can move (page re-layout, other content loading
+      // in) or disappear (SPA navigation away from the product) — treat a
+      // vanished primary element as "nothing left to warn about."
+      if (!document.contains(primary)) clearSizeWarning();
+    };
+    reposition();
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+
+    sizeWarningState = { overlayEl: overlay, blurredEls: els, reposition };
+  }
+
+  /** Adds newly-found duplicate elements to an already-active blur (called from the sweep). */
+  function extendSizeWarning(el) {
+    if (!sizeWarningState) return;
+    el.classList.add(SIZE_WARNING_BLUR_CLASS);
+    sizeWarningState.blurredEls.push(el);
+  }
+
+  function clearSizeWarning() {
+    if (!sizeWarningState) {
+      // Best-effort cleanup even with no tracked state — e.g. after a page
+      // re-render replaced the elements out from under us.
+      document.querySelectorAll(`.${SIZE_WARNING_BLUR_CLASS}`).forEach((el) => el.classList.remove(SIZE_WARNING_BLUR_CLASS));
+      const stray = document.getElementById(SIZE_WARNING_ID);
+      if (stray) stray.remove();
+      return;
+    }
+    sizeWarningState.blurredEls.forEach((el) => el.classList.remove(SIZE_WARNING_BLUR_CLASS));
+    sizeWarningState.overlayEl.remove();
+    window.removeEventListener("scroll", sizeWarningState.reposition, true);
+    window.removeEventListener("resize", sizeWarningState.reposition);
+    sizeWarningState = null;
+  }
+
   /**
    * Runs the whole pipeline end-to-end on click: write the prompt, generate
    * the image, and replace it on the page automatically. Once done, the
@@ -168,6 +260,10 @@
       // correct hem/neckline placement using the model's actual height —
       // null unless the page had garment measurements + a height is set.
       fitEditPrompt: null,
+      // Set when background.js's width math flags an extreme garment-vs-
+      // body mismatch — { tooLoose, easeIn, easeCm } or null. Drives the
+      // blur-until-confirmed warning in runGenerateAndReplace.
+      sizeWarning: null,
       modelImageUrl: null,
       finalImageUrl: null,
       lastStatus: "",
@@ -181,6 +277,7 @@
       if (!promptResult.ok) throw new Error(promptResult.error);
       session.prompt = promptResult.prompt;
       session.fitEditPrompt = promptResult.fitEditPrompt || null;
+      session.sizeWarning = promptResult.sizeWarning || null;
       // Claude's explicit shorter/taller-vs-reference conclusion, logged so
       // it's easy to check whether the actual fitEditPrompt/imagePrompt
       // stayed consistent with it, or silently reversed direction — a
@@ -246,13 +343,27 @@
       );
       console.log("[Fit For Me] FASHN Try-On image (garment applied, before fit correction):", session.tryonImageUrl);
       console.log("[Fit For Me] Final image (after fit correction, if any):", session.finalImageUrl);
+      if (session.sizeWarning) {
+        console.log("[Fit For Me] Size warning:", session.sizeWarning);
+      }
 
       report("Replacing image on page…");
       const searchUrls = [session.currentPageImageUrl, session.garmentImageUrl];
-      const { didReplace, matchedEl } = replaceImageOnPage(session.targetImageEl, session.finalImageUrl, searchUrls);
+      // A previous run's blur/warning (if any) is stale the moment a new
+      // image starts replacing the page — clear it before applying the new
+      // one's own warning (or lack of one) below.
+      clearSizeWarning();
+      const extraApply = session.sizeWarning ? (el) => extendSizeWarning(el) : null;
+      const { didReplace, matchedEl, matchedEls } = replaceImageOnPage(
+        session.targetImageEl,
+        session.finalImageUrl,
+        searchUrls,
+        extraApply
+      );
       if (didReplace) {
         session.currentPageImageUrl = session.finalImageUrl;
         if (matchedEl) session.targetImageEl = matchedEl;
+        if (session.sizeWarning) applySizeWarning(matchedEls, session.sizeWarning);
       }
       report(didReplace ? "Done — replaced on page." : "Generated, but couldn't find the image to replace on the page.");
       return { ok: true };
@@ -327,14 +438,21 @@
    * initial replace and catches any stragglers still carrying one of the
    * candidate URLs.
    */
-  function sweepStragglerMatches(searchUrls, newUrl, { intervalMs = 500, durationMs = 4000 } = {}) {
+  function sweepStragglerMatches(searchUrls, newUrl, { intervalMs = 500, durationMs = 4000, extraApply } = {}) {
     const start = Date.now();
     const timer = setInterval(() => {
       if (Date.now() - start > durationMs) {
         clearInterval(timer);
         return;
       }
-      findAllImagesByUrl(searchUrls).forEach((el) => applyImageReplacement(el, newUrl));
+      findAllImagesByUrl(searchUrls).forEach((el) => {
+        applyImageReplacement(el, newUrl);
+        // Lets callers (the size-warning blur) react to late-loading
+        // duplicates too, not just whatever was on the page at replace
+        // time — otherwise a straggler that loads in a second later would
+        // show the un-blurred, un-warned image right next to a blurred one.
+        if (extraApply) extraApply(el);
+      });
     }, intervalMs);
   }
 
@@ -352,13 +470,16 @@
    * Returns the element(s) actually matched, so the caller can update its
    * "currently displayed" pointer for the next regenerate.
    */
-  function replaceImageOnPage(imgEl, newUrl, searchUrls) {
+  function replaceImageOnPage(imgEl, newUrl, searchUrls, extraApply) {
     const isUsable = (el) => {
       if (!el || !document.contains(el)) return false;
       const rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     };
-    const applyTo = (el) => applyImageReplacement(el, newUrl);
+    const applyTo = (el) => {
+      applyImageReplacement(el, newUrl);
+      if (extraApply) extraApply(el);
+    };
 
     let matched = [];
     let scrollTarget = null;
@@ -380,8 +501,8 @@
     }
 
     if (scrollTarget) scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" });
-    sweepStragglerMatches(searchUrls, newUrl);
-    return { didReplace: matched.length > 0, matchedEl: matched[0] || null };
+    sweepStragglerMatches(searchUrls, newUrl, { extraApply });
+    return { didReplace: matched.length > 0, matchedEl: matched[0] || null, matchedEls: matched };
   }
 
   /**
@@ -487,6 +608,7 @@
         if (!result.ok) throw new Error(result.error);
         session.prompt = result.prompt;
         session.fitEditPrompt = result.fitEditPrompt || null;
+        session.sizeWarning = result.sizeWarning || null;
         textarea.value = result.prompt;
         fitEditTextarea.value = session.fitEditPrompt || "";
         fitEditTextarea.style.display = session.fitEditPrompt ? "block" : "none";
@@ -654,6 +776,17 @@
     "bust:", "waist:", "hem:", "hip:", "sleeve:", "shoulder:", "inseam:",
     "garment measurement", "flat measurement", "model is", "model wears",
     "wearing a size", "she is wearing", "model height", "our model is",
+    // Qualitative fit descriptions — no hard numbers, so they can't feed
+    // computeHemShift/computeWidthShift, but they're still real signal
+    // about the intended silhouette that was previously falling through
+    // entirely on sites that don't publish garment measurements at all
+    // (confirmed live on gap.com: "Fit: Classic. A straight & easy fit.
+    // Slightly cropped, hits above the hip." matched none of the keywords
+    // above and was silently dropped, right next to a line that did match).
+    "fit:", "regular fit", "relaxed fit", "oversized fit", "slim fit",
+    "loose fit", "classic fit", "tailored fit", "boxy fit", "cropped fit",
+    "easy fit", "true to size", "runs small", "runs large", "hits above",
+    "hits below", "hits at", "cropped", "oversized", "relaxed",
   ];
 
   /**
