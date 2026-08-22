@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Fit For Me - AI Try-On",
+  "version": "0.1.0",
+  "description": "Detects shopping pages and generates an AI try-on prompt for a midsize/plus-size model wearing the item shown.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Fit For Me settings"
+  },
+  "options_page": "options.html"
+}

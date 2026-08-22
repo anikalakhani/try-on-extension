@@ -1,0 +1,222 @@
+.fitforme-button {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  background: #111111;
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.fitforme-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.fitforme-button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.fitforme-panel {
+  position: fixed;
+  /* Sits just below the button (which stays visible now, unlike before) so
+     hovering can move from one to the other without the panel overlapping
+     the button text. */
+  top: 60px;
+  right: 16px;
+  z-index: 2147483647;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  background: #ffffff;
+  color: #111111;
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+
+.fitforme-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #111111;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fitforme-panel-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fitforme-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #444444;
+}
+
+.fitforme-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 8px;
+  border: 1px solid #dddddd;
+  border-radius: 8px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.fitforme-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.fitforme-primary-button,
+.fitforme-secondary-button {
+  flex: 1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.fitforme-primary-button {
+  background: #111111;
+  color: #ffffff;
+}
+
+.fitforme-secondary-button {
+  background: #f2f2f2;
+  color: #111111;
+  border-color: #dddddd;
+}
+
+.fitforme-primary-button:disabled,
+.fitforme-secondary-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.fitforme-error {
+  background: #fdeaea;
+  color: #a12222;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.fitforme-status {
+  font-size: 12px;
+  color: #444444;
+}
+
+.fitforme-note {
+  font-size: 11px;
+  color: #888888;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.fitforme-full-width {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.fitforme-target-image {
+  outline: 3px solid #ff5a36 !important;
+  outline-offset: 2px !important;
+}
+
+/* ---------- Loading overlay ---------- */
+
+.fitforme-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* page stays scrollable/clickable underneath */
+}
+
+.fitforme-loading-card {
+  pointer-events: auto;
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  padding: 28px 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  max-width: 260px;
+  text-align: center;
+}
+
+.fitforme-loading-spinner {
+  width: 52px;
+  height: 52px;
+  position: relative;
+}
+
+.fitforme-loading-spinner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 4px solid #f0f0f0;
+  border-top-color: #111111;
+  border-right-color: #ff5a36;
+  animation: fitforme-spin 1s linear infinite;
+}
+
+.fitforme-loading-spinner-emoji {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  animation: fitforme-bounce 1.1s ease-in-out infinite;
+}
+
+@keyframes fitforme-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fitforme-bounce {
+  0%,
+  100% {
+    transform: scale(1) rotate(-8deg);
+  }
+  50% {
+    transform: scale(1.15) rotate(8deg);
+  }
+}
+
+.fitforme-loading-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111111;
+  line-height: 1.4;
+}

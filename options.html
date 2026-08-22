@@ -1,0 +1,347 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Fit For Me — Settings</title>
+    <style>
+      html {
+        /* This page is styled for light mode only. Without this, native
+           form controls (buttons, selects) can silently pick up dark-mode
+           system text colors while our own CSS keeps their backgrounds
+           white — invisible text, exactly what happened with the chips. */
+        color-scheme: light;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 480px;
+        margin: 40px auto;
+        color: #111;
+        background: #fff;
+      }
+      h1 {
+        font-size: 18px;
+      }
+      h2 {
+        font-size: 14px;
+        margin-top: 32px;
+        padding-top: 16px;
+        border-top: 1px solid #eee;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+      }
+      .row > div {
+        flex: 1;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        margin-top: 16px;
+        margin-bottom: 4px;
+      }
+      input[type="password"],
+      input[type="text"],
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+        font-size: 13px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+      }
+      .hint {
+        font-size: 11px;
+        color: #777;
+        margin-top: 4px;
+      }
+      .field-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-top: 16px;
+      }
+      .field-header label {
+        margin: 0;
+      }
+      .field-header .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 400;
+        color: #555;
+      }
+      .field-header .toggle-row input {
+        margin: 0;
+      }
+      .value-badge {
+        font-weight: 400;
+        color: #555;
+      }
+      input[type="range"] {
+        width: 100%;
+        margin-top: 6px;
+        accent-color: #111;
+      }
+      input[type="range"]:disabled {
+        opacity: 0.4;
+      }
+      .swatch-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .swatch {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: 2px solid transparent;
+        cursor: pointer;
+        padding: 0;
+      }
+      .swatch.selected {
+        border-color: #111;
+        box-shadow: 0 0 0 2px #fff, 0 0 0 4px #111;
+      }
+      .swatch-clear {
+        background: none;
+        border: none;
+        color: #777;
+        font-size: 11px;
+        text-decoration: underline;
+        cursor: pointer;
+        padding: 0;
+        margin-top: 0;
+        align-self: center;
+      }
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .chip {
+        min-width: 34px;
+        padding: 6px 0;
+        text-align: center;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        background: #fff;
+        color: #111;
+        font-size: 13px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .chip.selected {
+        background: #111;
+        border-color: #111;
+        color: #fff;
+      }
+      button {
+        margin-top: 20px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        border-radius: 6px;
+        border: none;
+        background: #111;
+        color: #fff;
+        cursor: pointer;
+      }
+      #status {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #2a7a2a;
+      }
+      .model-photo-current {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-top: 12px;
+        padding: 10px;
+        border: 1px solid #eee;
+        border-radius: 8px;
+      }
+      .model-photo-img {
+        width: 90px;
+        height: 120px;
+        object-fit: cover;
+        border-radius: 6px;
+        background: #f2f2f2;
+        flex-shrink: 0;
+      }
+      .model-photo-current-info {
+        font-size: 12px;
+        color: #444;
+      }
+      #generateModelOptions {
+        margin-top: 12px;
+      }
+      #modelOptionsStatus {
+        margin-top: 6px;
+      }
+      .model-option-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .model-option-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+      .model-option-img {
+        width: 100%;
+        aspect-ratio: 3 / 4;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid #ddd;
+        background: #f2f2f2;
+      }
+      .model-option-use-btn {
+        margin-top: 0;
+        padding: 6px 10px;
+        font-size: 12px;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Fit For Me — Settings</h1>
+    <p class="hint">
+      Keys are stored locally in this browser's extension storage only — they are
+      never sent anywhere except directly to the API they belong to. If you've set up
+      <code>.env.local</code> + <code>node sync-keys.js</code> (see README), the fields
+      below can stay blank — those keys are used automatically. Anything entered here
+      takes priority over the file.
+    </p>
+
+    <label for="anthropicKey">Anthropic API key (optional if set via .env.local)</label>
+    <input type="password" id="anthropicKey" placeholder="sk-ant-..." autocomplete="off" />
+    <div class="hint">
+      Used to have Claude write the try-on prompt. If left blank, a simple local
+      template is used instead.
+    </div>
+
+    <label for="claudeModel">Claude model</label>
+    <select id="claudeModel">
+      <option value="claude-opus-5">claude-opus-5 (default)</option>
+      <option value="claude-sonnet-5">claude-sonnet-5 (cheaper)</option>
+      <option value="claude-haiku-4-5">claude-haiku-4-5 (cheapest)</option>
+    </select>
+
+    <label for="fashnKey">FASHN API key</label>
+    <input type="password" id="fashnKey" placeholder="fa-..." autocomplete="off" />
+    <div class="hint">Used for the Try-On step (garment fitting).</div>
+
+    <label for="falKey">fal.ai API key</label>
+    <input type="password" id="falKey" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" />
+    <div class="hint">Used for FLUX.1 to generate the model photo (replaces FASHN's Model Create).</div>
+
+    <h2>Model appearance</h2>
+    <p class="hint">
+      Used as concrete anchors in the prompt sent to Claude, so the generated model
+      reflects these specifics instead of a vague "plus-size" guess. All optional —
+      leave blank to fall back to the generic description.
+    </p>
+
+    <div class="field-header">
+      <label for="modelHeightRange">Height <span class="value-badge" id="modelHeightLabel">5'6"</span></label>
+      <span class="toggle-row">
+        <input type="checkbox" id="modelHeightEnabled" />
+        <label for="modelHeightEnabled" style="margin:0;font-weight:400;">use</label>
+      </span>
+    </div>
+    <input type="range" id="modelHeightRange" min="58" max="76" step="1" value="66" disabled />
+
+    <div class="field-header">
+      <label for="modelWeightRange">Weight <span class="value-badge" id="modelWeightLabel">190 lbs</span></label>
+      <span class="toggle-row">
+        <input type="checkbox" id="modelWeightEnabled" />
+        <label for="modelWeightEnabled" style="margin:0;font-weight:400;">use</label>
+      </span>
+    </div>
+    <input type="range" id="modelWeightRange" min="100" max="300" step="5" value="190" disabled />
+
+    <div class="field-header">
+      <span class="toggle-row" style="font-size:12px;">
+        <input type="checkbox" id="sandbagEnabled" />
+        <label for="sandbagEnabled" style="margin:0;font-weight:600;color:#111;">Exaggerate weight sent to the model</label>
+      </span>
+      <span class="value-badge" id="sandbagLabel">+50%</span>
+    </div>
+    <input type="range" id="sandbagPercent" min="0" max="100" step="10" value="50" disabled />
+    <div class="hint">
+      Image models tend to under-deliver on extreme body-size instructions. If your
+      weight above is 200 lbs and this is set to +50%, the prompt actually sent to
+      FASHN will say 300 lbs — your saved setting stays the real number, only what's
+      sent to the model is inflated.
+    </div>
+
+    <div class="field-header">
+      <label>Cup size</label>
+      <button type="button" class="swatch-clear" id="chestSizeClear">clear</button>
+    </div>
+    <div class="chip-row" id="chestSizeChips"></div>
+
+    <div class="field-header">
+      <label for="bustRange">Bust/chest circumference <span class="value-badge" id="bustLabel">36.0 in</span></label>
+      <span class="toggle-row">
+        <input type="checkbox" id="bustEnabled" />
+        <label for="bustEnabled" style="margin:0;font-weight:400;">use</label>
+      </span>
+    </div>
+    <input type="range" id="bustRange" min="28" max="52" step="0.5" value="36" disabled />
+    <div class="hint">
+      Used to check whether a garment will actually fit snugly or loosely on you, based on
+      its own bust measurement (when the product page lists one) — e.g. catches a jacket
+      that will look oversized because the garment's bust measurement is a lot bigger than
+      yours. Optional: if left off, a rough estimate is used instead, based on your cup
+      size above (assuming an average band size — real fit varies more than that alone
+      can capture, so turn this on and enter your real number for a more accurate result).
+    </div>
+
+    <div class="field-header">
+      <label>Skin tone</label>
+      <button type="button" class="swatch-clear" id="skinToneClear">clear</button>
+    </div>
+    <div class="swatch-row" id="skinToneSwatches"></div>
+
+    <button id="save">Save</button>
+    <div id="status"></div>
+
+    <h2>Your model photo</h2>
+    <p class="hint">
+      Generated once from the appearance settings above, then reused for every try-on —
+      the model's face and body don't change per product, only the garment does, so
+      regenerating a photo on every single try-on was wasting fal.ai calls. Click
+      <strong>Save</strong> above first if you changed anything, then generate options
+      below. A new photo is only needed again if you change height/weight/cup size/skin
+      tone.
+    </p>
+
+    <div id="currentModelPreview" class="model-photo-current" style="display: none">
+      <img id="currentModelImg" class="model-photo-img" alt="Current saved model photo" />
+      <div class="model-photo-current-info">
+        <div>Current saved model photo</div>
+        <div class="hint" id="modelStaleWarning" style="display: none; color: #a12222">
+          Your appearance settings have changed since this photo was generated —
+          regenerate below so future try-ons stay consistent with your saved specs.
+        </div>
+      </div>
+    </div>
+    <div id="noModelPreview" class="hint">No model photo saved yet — generate options below.</div>
+
+    <button type="button" id="generateModelOptions">Generate 3 options</button>
+    <div class="hint" id="modelOptionsStatus"></div>
+
+    <div id="modelOptionsGrid" class="model-option-grid" style="display: none"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>
