@@ -55,6 +55,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
+// Generous ceiling for every Claude call. Thinking tokens count toward
+// max_tokens, and the main response is a JSON object with three long fields —
+// the old 1024/512 limits could cut the reply off mid-JSON. Not a cost
+// concern: you only pay for tokens actually generated, not the ceiling.
+const CLAUDE_MAX_TOKENS = 4096;
+
+/**
+ * A reply cut off by max_tokens used to be parsed anyway: parseClaudeJson's
+ * non-JSON fallback then sent the half-finished JSON text to FLUX as the
+ * image prompt (and dropped the fit-edit prompt) with no error — a wasted
+ * generation. Fail loudly instead so the user can just retry.
+ */
+function assertNotTruncated(data) {
+  if (data && data.stop_reason === "max_tokens") {
+    throw new Error("Claude's reply was cut off (hit the token limit) — please try again.");
+  }
+}
+
 const FASHN_BASE = "https://api.fashn.ai/v1";
 const FAL_BASE = "https://fal.run";
 
@@ -322,7 +340,7 @@ async function getSettings() {
     anthropicApiKey: stored.anthropicApiKey || fileConfig.ANTHROPIC_API_KEY || "",
     fashnApiKey: stored.fashnApiKey || fileConfig.FASHN_API_KEY || "",
     falApiKey: stored.falApiKey || fileConfig.FAL_API_KEY || "",
-    claudeModel: stored.claudeModel || "claude-opus-5",
+    claudeModel: stored.claudeModel || "claude-opus-5-5",
     modelHeight: stored.modelHeight || "",
     modelHeightInches: stored.modelHeightInches || 0,
     modelHeightEnabled: !!stored.modelHeightEnabled,
@@ -745,7 +763,7 @@ Output ONLY the prompt text. No preamble, no markdown, no quotation marks.`;
     },
     body: JSON.stringify({
       model: settings.claudeModel,
-      max_tokens: 512,
+      max_tokens: CLAUDE_MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: "user", content: "Write the prompt now." }],
     }),
@@ -757,6 +775,7 @@ Output ONLY the prompt text. No preamble, no markdown, no quotation marks.`;
   }
 
   const data = await response.json();
+  assertNotTruncated(data);
   const textBlock = (data.content || []).find((b) => b.type === "text");
   if (!textBlock || !textBlock.text) {
     throw new Error("Claude returned no text content.");
@@ -1059,7 +1078,7 @@ Output format: respond with ONLY a single raw JSON object, no markdown code fenc
     },
     body: JSON.stringify({
       model: settings.claudeModel,
-      max_tokens: 1024,
+      max_tokens: CLAUDE_MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: "user", content: userContent }],
     }),
@@ -1071,6 +1090,7 @@ Output format: respond with ONLY a single raw JSON object, no markdown code fenc
   }
 
   const data = await response.json();
+  assertNotTruncated(data);
   const textBlock = (data.content || []).find((b) => b.type === "text");
   if (!textBlock || !textBlock.text) {
     throw new Error("Claude returned no text content.");

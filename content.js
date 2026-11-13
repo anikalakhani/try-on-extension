@@ -484,7 +484,20 @@
     let matched = [];
     let scrollTarget = null;
 
-    const urlMatches = findAllImagesByUrl(searchUrls).filter(isUsable);
+    // Largest rendered copy first. findAllImagesByUrl returns matches in DOM
+    // order, and on most shops the thumbnail rail comes BEFORE the main image
+    // in the DOM — so "first match" was routinely a ~80px thumbnail. That is
+    // the element we scroll to, hand back as matchedEl (stored as
+    // session.targetImageEl), and anchor the size-warning card over. Confirmed
+    // in a fixture test: the warning card was squeezed into the thumbnail's
+    // 80x120 box instead of covering the main product photo.
+    const renderedArea = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.width * r.height;
+    };
+    const urlMatches = findAllImagesByUrl(searchUrls)
+      .filter(isUsable)
+      .sort((a, b) => renderedArea(b) - renderedArea(a));
     if (urlMatches.length) {
       urlMatches.forEach(applyTo);
       matched = urlMatches;

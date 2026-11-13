@@ -157,7 +157,7 @@ async function load() {
   const stored = await chrome.storage.local.get(STORAGE_KEYS);
 
   anthropicKeyEl.value = stored.anthropicApiKey || "";
-  claudeModelEl.value = stored.claudeModel || "claude-opus-5";
+  claudeModelEl.value = stored.claudeModel || "claude-opus-5-5";
   fashnKeyEl.value = stored.fashnApiKey || "";
   falKeyEl.value = stored.falApiKey || "";
 
