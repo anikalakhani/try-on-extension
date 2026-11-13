@@ -1,0 +1,7 @@
+{
+  "name": "fit-for-me-extension",
+  "private": true,
+  "scripts": {
+    "test": "node tests/test_logic.js && node tests/test_pipeline.js && node tests/test_parity.js && node tests/test_truncation.js"
+  }
+}
